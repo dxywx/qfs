@@ -184,6 +184,12 @@ include_directories(
     ${JAVA_INCLUDE_PATH2}
 )
 
+# add RDMA support
+include_directories(/root/workspace/rdma-core/build/include)
+link_directories(/root/workspace/rdma-core/build/lib)
+link_libraries(ibverbs)
+link_libraries(rdmacm)
+
 if(FUSE_FOUND)
     message(STATUS "Building qfs_fuse")
     message(STATUS "fuse libs:         ${FUSE_LIBRARIES}")

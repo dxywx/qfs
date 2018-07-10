@@ -48,6 +48,9 @@
 #include <netinet/tcp.h>
 #include <unistd.h>
 
+// add rdma support to socket
+#include <rdma/rsocket.h>
+
 #include <algorithm>
 
 namespace KFS {
@@ -83,7 +86,7 @@ template<typename T>
 static inline bool
 SetSockOpt(int fd, int level, int name, const T& val)
 {
-    return (setsockopt(fd, level, name, &val, sizeof(val)) != 0);
+    return (rsetsockopt(fd, level, name, &val, sizeof(val)) != 0);
 }
 
 int TcpSocket::sRecvBufSize    = 64 << 10;
@@ -334,8 +337,8 @@ TcpSocket::StartListening(bool nonBlockingAccept, int maxQueue)
         return Perror("Listen", EBADF);
     }
     SetupSocket();
-    if ((nonBlockingAccept && fcntl(mSockFd, F_SETFL, O_NONBLOCK)) ||
-            listen(mSockFd, maxQueue)) {
+    if ((nonBlockingAccept && rfcntl(mSockFd, F_SETFL, O_NONBLOCK)) ||
+            rlisten(mSockFd, maxQueue)) {
         return PerrorFatal("listen");
     }
     return 0;
@@ -361,15 +364,16 @@ TcpSocket::Bind(
             return ret;
         }
     }
-    mSockFd = socket(addr.GetProtocol(), SOCK_STREAM, 0);
+    mSockFd = rsocket(addr.GetProtocol(), SOCK_STREAM, 0);
     if (mSockFd < 0) {
         return PerrorFatal("socket");
     }
     mType = addr.GetType();
     UpdateSocketCount(1);
-    if (fcntl(mSockFd, F_SETFD, FD_CLOEXEC)) {
-        Perror("set FD_CLOEXEC");
-    }
+    // rdma socket not support
+    // if (rfcntl(mSockFd, F_SETFD, FD_CLOEXEC)) {
+    //    Perror("set FD_CLOEXEC");
+    // }
     int flag = ipV6OnlyFlag ? 1 : 0;
     if (addr.GetProtocol() == AF_INET6 &&
             SetSockOpt(mSockFd, IPPROTO_IPV6, IPV6_V6ONLY, flag)) {
@@ -379,7 +383,7 @@ TcpSocket::Bind(
     if (SetSockOpt(mSockFd, SOL_SOCKET, SO_REUSEADDR, flag)) {
         Perror("setsockopt SO_REUSEADDR");
     }
-    if (bind(mSockFd, addr.Ptr(), addr.Size())) {
+    if (rbind(mSockFd, addr.Ptr(), addr.Size())) {
         return PerrorFatal(addr);
     }
     return 0;
@@ -393,7 +397,7 @@ TcpSocket::Accept(int* status /* = 0 */)
     TcpSocket* accSock;
     socklen_t  cliAddrLen = cliAddr.Size();
 
-    if ((fd = accept(mSockFd, cliAddr.Ptr(), &cliAddrLen)) < 0) {
+    if ((fd = raccept(mSockFd, cliAddr.Ptr(), &cliAddrLen)) < 0) {
         const int err = errno;
         if (err != EAGAIN && err != EWOULDBLOCK) {
             Perror("accept", err);
@@ -404,16 +408,17 @@ TcpSocket::Accept(int* status /* = 0 */)
         return 0;
     }
     if (sMaxOpenSockets <= globals().ctrOpenNetFds.GetValue()) {
-        close(fd);
+        rclose(fd);
         if (status) {
             *status = -ENFILE;
         }
         return 0;
     }
-    if (fcntl(fd, F_SETFD, FD_CLOEXEC)) {
-        Perror("set FD_CLOEXEC");
-    }
-    if (fcntl(fd, F_SETFL, O_NONBLOCK)) {
+    // not support by RDMA
+    // if (rfcntl(fd, F_SETFD, FD_CLOEXEC)) {
+    //    Perror("set FD_CLOEXEC");
+    // }
+    if (rfcntl(fd, F_SETFL, O_NONBLOCK)) {
         Perror("set O_NONBLOCK");
     }
     accSock = new TcpSocket(fd, mType);
@@ -434,25 +439,26 @@ TcpSocket::Connect(
         return -ENFILE;
     }
     mType = remoteAddr.GetType();
-    mSockFd = socket(remoteAddr.GetProtocol(), SOCK_STREAM, 0);
+    mSockFd = rsocket(remoteAddr.GetProtocol(), SOCK_STREAM, 0);
     if (mSockFd < 0) {
         return (errno > 0 ? -errno : mSockFd);
     }
     UpdateSocketCount(1);
-    if (fcntl(mSockFd, F_SETFD, FD_CLOEXEC)) {
-        Perror("set FD_CLOEXEC");
-    }
+    // not support by RDMA
+    // if (rfcntl(mSockFd, F_SETFD, FD_CLOEXEC)) {
+    //    Perror("set FD_CLOEXEC");
+    // }
     if (nonblockingConnect) {
         // when we do a non-blocking connect, we mark the socket
         // non-blocking; then call connect and it wil return
         // EINPROGRESS; the fd is added to the select loop to check
         // for completion
-        if (fcntl(mSockFd, F_SETFL, O_NONBLOCK)) {
+        if (rfcntl(mSockFd, F_SETFL, O_NONBLOCK)) {
             Perror("set O_NONBLOCK");
         }
     }
     SetupSocket();
-    int res = connect(mSockFd, remoteAddr.Ptr(), remoteAddr.Size());
+    int res = rconnect(mSockFd, remoteAddr.Ptr(), remoteAddr.Size());
     if (res < 0) {
         res = -errno;
 #ifdef EALREADY
@@ -466,7 +472,7 @@ TcpSocket::Connect(
         }
     }
     if (! nonblockingConnect) {
-        if (fcntl(mSockFd, F_SETFL, O_NONBLOCK)) {
+        if (rfcntl(mSockFd, F_SETFL, O_NONBLOCK)) {
             Perror("set O_NONBLOCK");
         }
     }
@@ -510,7 +516,7 @@ int
 TcpSocket::GetPeerName(TcpSocket::Address& peerAddr) const
 {
     socklen_t peerLen = peerAddr.Size();
-    if (getpeername(mSockFd, peerAddr.Ptr(), &peerLen)) {
+    if (rgetpeername(mSockFd, peerAddr.Ptr(), &peerLen)) {
         return Perror("getpeername");
     }
     return 0;
@@ -531,7 +537,7 @@ TcpSocket::GetSockName() const
 {
     Address   saddr(mType);
     socklen_t len = saddr.Size();
-    if (getsockname(mSockFd, saddr.Ptr(), &len)) {
+    if (rgetsockname(mSockFd, saddr.Ptr(), &len)) {
         return "unknown";
     }
     return ToString(saddr);
@@ -556,7 +562,7 @@ TcpSocket::GetSockLocation(ServerLocation& location) const
     }
     Address   addr(mType);
     socklen_t len = addr.Size();
-    if (getsockname(mSockFd, addr.Ptr(), &len)) {
+    if (rgetsockname(mSockFd, addr.Ptr(), &len)) {
         return Perror("getsockname");
     }
     return addr.GetLocation(location);
@@ -567,7 +573,7 @@ TcpSocket::Send(const char *buf, int bufLen)
 {
     int nwrote;
 
-    nwrote = bufLen > 0 ? send(mSockFd, buf, bufLen, 0) : 0;
+    nwrote = bufLen > 0 ? rsend(mSockFd, buf, bufLen, 0) : 0;
     if (nwrote > 0) {
         globals().ctrNetBytesWritten.Update(nwrote);
     }
@@ -578,7 +584,7 @@ int TcpSocket::Recv(char *buf, int bufLen)
 {
     int nread;
 
-    nread = bufLen > 0 ? recv(mSockFd, buf, bufLen, 0) : 0;
+    nread = bufLen > 0 ? rrecv(mSockFd, buf, bufLen, 0) : 0;
     if (nread > 0) {
         globals().ctrNetBytesRead.Update(nread);
     }
@@ -589,7 +595,7 @@ int TcpSocket::Recv(char *buf, int bufLen)
 int
 TcpSocket::Peek(char *buf, int bufLen)
 {
-    return (bufLen > 0 ? recv(mSockFd, buf, bufLen, MSG_PEEK) : 0);
+    return (bufLen > 0 ? rrecv(mSockFd, buf, bufLen, MSG_PEEK) : 0);
 }
 
 void
@@ -598,7 +604,7 @@ TcpSocket::Close()
     if (mSockFd < 0) {
         return;
     }
-    close(mSockFd);
+    rclose(mSockFd);
     mSockFd = -1;
     mType   = kTypeNone;
     UpdateSocketCount(-1);
@@ -614,7 +620,7 @@ TcpSocket::Shutdown(bool readFlag, bool writeFlag)
     if (how == 0) {
         return 0;
     }
-    if (shutdown(mSockFd, how)) {
+    if (rshutdown(mSockFd, how)) {
         const int err = errno;
         return (err < 0 ? err : (err != 0 ? -err : -1));
     }
@@ -629,7 +635,7 @@ TcpSocket::GetSocketError() const
     }
     int       err = 0;
     socklen_t len = sizeof(err);
-    if (getsockopt(mSockFd, SOL_SOCKET, SO_ERROR, &err, &len)) {
+    if (rgetsockopt(mSockFd, SOL_SOCKET, SO_ERROR, &err, &len)) {
         return (errno != 0 ? errno : EINVAL);
     }
     assert(len == sizeof(err));

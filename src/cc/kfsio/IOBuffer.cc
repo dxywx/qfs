@@ -46,6 +46,9 @@
 #include <algorithm>
 #include <vector>
 
+// add rdma support to socket
+#include <rdma/rsocket.h>
+
 namespace KFS
 {
 
@@ -400,7 +403,7 @@ IOBufferData::Read(int fd, IOBufferData::BufPos maxReadAhead /* = -1 */)
         return -1;
     }
     DoRead(GetBufferPtr(), true);
-    nread = read(fd, mProducer, numBytes);
+    nread = rread(fd, mProducer, numBytes);
     DoRead(GetBufferPtr(), false);
 
     if (nread > 0) {
@@ -422,7 +425,7 @@ IOBufferData::Write(int fd)
     if (numBytes <= 0) {
         return -1;
     }
-    nwrote = write(fd, mConsumer, numBytes);
+    nwrote = rwrite(fd, mConsumer, numBytes);
 
     if (nwrote > 0) {
         mConsumer += nwrote;
@@ -1233,7 +1236,7 @@ IOBuffer::Read(int fd, IOBuffer::BufPos maxReadAhead,
             DoRead(it->GetBufferPtr(), true);
             BufPos nRd = reader ?
                 reader->Read(fd, it->Producer(), maxReadAhead) :
-                read(fd, it->Producer(), maxReadAhead);
+                rread(fd, it->Producer(), maxReadAhead);
             if (nRd < 0 && ! reader) {
                 nRd = -errno;
                 if (0 <= nRd) {
@@ -1299,7 +1302,7 @@ IOBuffer::Read(int fd, IOBuffer::BufPos maxReadAhead,
         numRead -= nBytes;
         const ssize_t nRd = reader ?
             reader->Read(fd, readVec[0].iov_base, readVec[0].iov_len) :
-            readv(fd, readVec, nVec);
+            rreadv(fd, readVec, nVec);
         if (nRd < numRead) {
             maxRead = 0; // short read, eof, or error: we're done
         } else if (maxRead > 0) {
@@ -1396,7 +1399,7 @@ IOBuffer::Write(int fd)
             mBuf.clear();
             break;
         }
-        const ssize_t nWr = writev(fd, writeVec, nVec);
+        const ssize_t nWr = rwritev(fd, writeVec, nVec);
         if (nWr == toWr && it == mBuf.end()) {
             mBuf.clear();
         } else {
